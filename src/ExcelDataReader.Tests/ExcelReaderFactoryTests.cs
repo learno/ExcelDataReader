@@ -21,4 +21,13 @@ public class ExcelReaderFactoryTests
         using IExcelDataReader excelReader = ExcelReaderFactory.CreateReader(Configuration.GetTestWorkbook(name));
         Assert.That(excelReader.GetType().Name, Is.EqualTo("ExcelOpenXmlReader"));
     }
+
+    [TestCase("Test10x10.xml")]
+    [TestCase("TestOpen.xml")]
+    [TestCase("TestMultiSheet.xml")]
+    public void ProbeXml(string name)
+    {
+        using IExcelDataReader excelReader = ExcelReaderFactory.CreateReader(Configuration.GetTestWorkbook(name));
+        Assert.That(excelReader.GetType().Name, Is.EqualTo("ExcelXmlReader"));
+    }
 }

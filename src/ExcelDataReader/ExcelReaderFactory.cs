@@ -64,6 +64,12 @@ public static class ExcelReaderFactory
             return new ExcelOpenXmlReader(fileStream);
         }
 
+        // Check for Excel XML format (SpreadsheetML)
+        if (IsExcelXmlFormat(fileStream))
+        {
+            return new ExcelXmlReader(fileStream);
+        }
+
         throw new HeaderException(Errors.ErrorHeaderSignature);
     }
 
@@ -168,6 +174,24 @@ public static class ExcelReaderFactory
         return new ExcelCsvReader(fileStream, configuration.FallbackEncoding, configuration.AutodetectSeparators, configuration.AnalyzeInitialCsvRows, configuration.QuoteChar, configuration.TrimWhiteSpace);
     }
 
+    /// <summary>
+    /// Creates an instance of ExcelXmlReader.
+    /// </summary>
+    /// <param name="fileStream">The file stream.</param>
+    /// <param name="configuration">The reader configuration -or- <see langword="null"/> to use the default configuration.</param>
+    /// <returns>The excel data reader.</returns>
+    public static IExcelDataReader CreateXmlReader(Stream fileStream, ExcelReaderConfiguration configuration = null)
+    {
+        configuration ??= new ExcelReaderConfiguration();
+
+        if (configuration.LeaveOpen)
+        {
+            fileStream = new LeaveOpenStream(fileStream);
+        }
+
+        return new ExcelXmlReader(fileStream);
+    }
+
     private static bool TryGetWorkbook(Stream fileStream, CompoundDocument document, out Stream stream)
     {
         var workbookEntry = document.FindEntry(DirectoryEntryWorkbook, DirectoryEntryBook);
@@ -215,5 +239,106 @@ public static class ExcelReaderFactory
 
         stream = encryption.CreateEncryptedPackageStream(packageStream, secretKey);
         return true;
+    }
+
+    /// <summary>
+    /// Checks if the stream contains Excel XML format (SpreadsheetML).
+    /// </summary>
+    /// <param name="fileStream">The file stream to check.</param>
+    /// <returns>True if the stream appears to be Excel XML format.</returns>
+    private static bool IsExcelXmlFormat(Stream fileStream)
+    {
+        if (fileStream == null || !fileStream.CanSeek || !fileStream.CanRead)
+        {
+            return false;
+        }
+
+        var originalPosition = fileStream.Position;
+        try
+        {
+            fileStream.Seek(0, SeekOrigin.Begin);
+
+            // Read first 1024 bytes to check for XML declaration and Workbook element
+            var buffer = new byte[1024];
+            var bytesRead = fileStream.Read(buffer, 0, buffer.Length);
+            if (bytesRead < 5)
+            {
+                return false;
+            }
+
+            // Check for XML declaration (<?xml)
+            var text = System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Min(bytesRead, 1024));
+            if (!text.TrimStart().StartsWith("<?xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // Check for Workbook element (with or without namespace prefix)
+            // Excel XML format uses <Workbook> or <ss:Workbook> as root element
+            // Also check for the SpreadsheetML namespace
+            var textLower = text.ToLowerInvariant();
+            var hasWorkbook = textLower.Contains("<workbook") ||
+                             textLower.Contains("<ss:workbook") ||
+                             textLower.Contains("urn:schemas-microsoft-com:office:spreadsheet");
+
+            if (hasWorkbook)
+            {
+                return true;
+            }
+
+            // If we haven't found Workbook in first 1024 bytes, try reading more
+            // or use XML reader to check properly
+            fileStream.Seek(0, SeekOrigin.Begin);
+            return IsExcelXmlFormatUsingXmlReader(fileStream);
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            fileStream.Position = originalPosition;
+        }
+    }
+
+    private static bool IsExcelXmlFormatUsingXmlReader(Stream fileStream)
+    {
+        try
+        {
+            using var xmlReader = System.Xml.XmlReader.Create(fileStream, new System.Xml.XmlReaderSettings
+            {
+                IgnoreWhitespace = true,
+                IgnoreComments = true,
+                IgnoreProcessingInstructions = false,
+                DtdProcessing = System.Xml.DtdProcessing.Ignore
+            });
+
+            // Read until we find the root element
+            while (xmlReader.Read())
+            {
+                if (xmlReader.NodeType == System.Xml.XmlNodeType.Element)
+                {
+                    var localName = xmlReader.LocalName;
+                    var namespaceUri = xmlReader.NamespaceURI;
+
+                    // Check for Workbook element (with or without namespace)
+                    if (localName.Equals("Workbook", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Check if it's Excel XML namespace or no namespace (legacy format)
+                        if (string.IsNullOrEmpty(namespaceUri) ||
+                            namespaceUri.ToLowerInvariant().Contains("schemas-microsoft-com:office:spreadsheet"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
